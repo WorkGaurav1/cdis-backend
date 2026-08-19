@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# lint -> type check -> tests (unit + integration) -> coverage -> security checks.
+# One job, ordered steps -> the order above is guaranteed by construction.
+#
+# Simpler than the original monorepo's backend CI: E2E now lives in
+# cdis-deployment and drives a real deployed environment, so this
+# workflow only needs a `cdis_test` database, never a seeded "dev" one.
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          # Setting MYSQL_DATABASE directly to cdis_test means the
+          # official image auto-grants MYSQL_USER full privileges on
+          # it at container creation — no manual GRANT step needed.
+          MYSQL_DATABASE: cdis_test
+          MYSQL_USER: cdis
+          MYSQL_PASSWORD: cdis_dev_password
+          MYSQL_ROOT_PASSWORD: cdis_root_dev_password
+        ports:
+          - 3308:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot -pcdis_root_dev_password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # generated/ is gitignored (a build artifact, not source) — a
+      # fresh checkout has no Prisma Client until this runs.
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Prepare test database
+        env:
+          DATABASE_URL: mysql://cdis:cdis_dev_password@localhost:3308/cdis_test
+        run: |
+          npx prisma migrate deploy
+          npx prisma db seed
+
+      # ---- lint ----
+      - name: Lint
+        run: npm run lint
+
+      # ---- type check ----
+      - name: Type-check
+        run: npm run build # "build" *is* `tsc --noEmit` — no compiled artifact ships; tsx runs source directly
+
+      # ---- tests ----
+      - name: Tests (unit + integration)
+        run: npm run test:all
+
+      # ---- coverage ----
+      # Re-runs (unit only — vitest.config.ts's own scope) with
+      # coverage instrumentation so a threshold failure shows up as
+      # its own distinct stage rather than folded into "tests" above.
+      - name: Coverage
+        run: npm run test:coverage
+
+      # ---- security checks ----
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
