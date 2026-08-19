@@ -50,9 +50,26 @@ jobs:
       - name: Generate Prisma Client
         run: npx prisma generate
 
+      # prisma.config.ts's seed command is `tsx --env-file=.env
+      # prisma/seed.ts` — tsx's --env-file flag hard-fails if the file
+      # doesn't literally exist, even though DATABASE_URL is already
+      # in the shell env below. CI-only values, matching .env.example.
+      - name: Write .env
+        run: |
+          cat > .env <<'EOF'
+          NODE_ENV=test
+          PORT=4000
+          CORS_ORIGIN=http://localhost:5173
+          DATABASE_URL=mysql://cdis:cdis_dev_password@localhost:3308/cdis_test
+          JWT_ACCESS_SECRET=ci-only-secret-never-used-outside-github-actions
+          JWT_ACCESS_EXPIRES_IN=15m
+          REFRESH_TOKEN_EXPIRES_IN_DAYS=7
+          BCRYPT_SALT_ROUNDS=4
+          ACCOUNT_LOCKOUT_MAX_ATTEMPTS=5
+          ACCOUNT_LOCKOUT_DURATION_MINUTES=15
+          EOF
+
       - name: Prepare test database
-        env:
-          DATABASE_URL: mysql://cdis:cdis_dev_password@localhost:3308/cdis_test
         run: |
           npx prisma migrate deploy
           npx prisma db seed
